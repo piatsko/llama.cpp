@@ -17,6 +17,7 @@ else()
     add_subdirectory(batched)
     add_subdirectory(embedding)
     add_subdirectory(eval-callback)
+    add_subdirectory(save-hidden-npy-callback)
 
     add_subdirectory(gguf-hash)
     add_subdirectory(gguf)
