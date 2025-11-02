@@ -6,6 +6,7 @@
 #include "nlohmann/json.hpp"
 
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <numeric>
 #include <string>
@@ -18,7 +19,7 @@ struct json_entry {
     std::string question_text;
     std::string answer_text;
     std::string model_answer;
-    std::string target;
+    int target;
 };
 
 /**
@@ -125,28 +126,21 @@ static bool ggml_debug(struct ggml_tensor * t, bool ask, void * user_data) {
     // Store only the tensor whose name matches the target layer
     if (std::string(t->name) == cb_data->target_layer) {
         const size_t n_bytes = ggml_nbytes(t);
-        const bool   is_host = ggml_backend_buffer_is_host(t->buffer);
+        std::vector<uint8_t> local_buf(n_bytes);
 
-        const void * data_ptr = nullptr;
-        if (!is_host) {
-            cb_data->data.resize(n_bytes);
-            ggml_backend_tensor_get(t, cb_data->data.data(), 0, n_bytes);
-            data_ptr = cb_data->data.data();
-        } else {
-            data_ptr = static_cast<const void *>(t->data);
-        }
+        ggml_backend_tensor_get(t, local_buf.data(), 0, n_bytes);
+        const void * data_ptr = local_buf.data();
 
-        // Build shape vector (trim trailing zeros)
         std::vector<int64_t> shape;
         for (int i = 0; i < GGML_MAX_DIMS; ++i) {
-            shape.push_back(t->ne[i]);
+            if (t->ne[i] != 0) shape.push_back(t->ne[i]);
         }
-        if (shape.empty()) {
-            shape.push_back(1);
-        }
+        if (shape.empty()) shape.push_back(1);
 
-        std::string out_path = cb_data->output_dir + '/' + std::to_string(cb_data->uid) + ".npy";
-        save_data_npy(data_ptr, n_bytes, shape, t->type, out_path.c_str());
+        std::filesystem::path outp = std::filesystem::path(cb_data->output_dir) /
+                                    (std::to_string(cb_data->uid) + ".npy");
+
+        save_data_npy(data_ptr, n_bytes, shape, t->type, outp.string().c_str());
     }
     return true;
 }
@@ -184,7 +178,7 @@ static std::vector<json_entry> load_input_json(const std::string & path) {
         e.question_text = obj.at("question_text").get<std::string>();
         e.answer_text   = obj.at("answer_text").get<std::string>();
         e.model_answer  = obj.at("model_answer").get<std::string>();
-        e.target        = obj.at("target").get<std::string>();
+        e.target        = obj.at("target").get<int>();
         entries.push_back(std::move(e));
     }
     return entries;
@@ -193,18 +187,15 @@ static std::vector<json_entry> load_input_json(const std::string & path) {
 int main(int argc, char ** argv) {
     // keep your original constants, but expand them to full paths
     const std::string TARGET_LAYER = std::string("l_out-15");
-    const std::string INPUT_JSON   = std::string(std::getenv("HOME")) + "/310-solution/datasets/splits/train.json";
-    const std::string OUTPUT_DIR   = std::string(std::getenv("HOME")) + "/310-solution/npy_outputs/";
+    const std::string INPUT_JSON   = "input.json";
+    const std::string OUTPUT_DIR   = "npy_outputs/";
 
-    // make sure the output directory exists
-    std::filesystem::create_directories(OUTPUT_DIR);
-
-    callback_data cb_data{
-        .data         = {},
-        .uid          = 0,
-        .target_layer = TARGET_LAYER,
-        .output_dir   = OUTPUT_DIR,
-    };
+    if (!std::filesystem::exists(OUTPUT_DIR)) {
+        std::filesystem::create_directories(OUTPUT_DIR);
+    } else {
+        LOG("Output directory already exists: %s\n", OUTPUT_DIR.c_str());
+    }
+    callback_data cb_data{{},0,TARGET_LAYER, OUTPUT_DIR };
 
     common_params params;
     if (!common_params_parse(argc, argv, params, LLAMA_EXAMPLE_COMMON)) {
