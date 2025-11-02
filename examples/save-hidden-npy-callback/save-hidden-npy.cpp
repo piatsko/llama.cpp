@@ -32,7 +32,7 @@ struct json_entry {
  */
 struct callback_data {
     std::vector<uint8_t> data;
-    uint32_t uid;
+    uint32_t             uid;
 };
 
 static std::string ggml_type_to_numpy_descr(ggml_type type) {
