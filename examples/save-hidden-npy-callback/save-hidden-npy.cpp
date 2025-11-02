@@ -206,8 +206,8 @@ int main(int argc, char ** argv) {
     llama_backend_init();
     llama_numa_init(params.numa);
 
-    params.cb_eval           = ggml_debug;
-    params.cb_eval_user_data = &cb_data;
+    // params.cb_eval           = ggml_debug;
+    // params.cb_eval_user_data = &cb_data;
     params.warmup            = false;
 
     common_init_result llama_init = common_init_from_params(params);
@@ -221,11 +221,14 @@ int main(int argc, char ** argv) {
     std::vector<json_entry> entries = load_input_json(INPUT_JSON);
     for (const auto & e : entries) {
         cb_data.uid = e.uid;
+        int n_ctx_used = llama_memory_seq_pos_max(llama_get_memory(ctx), 0) + 1;
+        LOG("processing entry with uid: %u \t context used: %d\n", e.uid, n_ctx_used);
         // run inference on the question text
         if (!run_one(ctx, params, e.question_text)) {
             LOG_ERR("Inference failed for uid %u\n", e.uid);
             continue;
         }
+        llama_memory_seq_rm(llama_get_memory(ctx), 0, 0, -1);
     }
 
     LOG("\n");
