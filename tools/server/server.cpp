@@ -23,6 +23,7 @@
 #include <cstddef>
 #include <cinttypes>
 #include <deque>
+#include <fstream>
 #include <memory>
 #include <mutex>
 #include <signal.h>
@@ -2314,6 +2315,131 @@ struct server_response {
     }
 };
 
+const char* TARGET_LAYER = "l_out-15";
+const char* OUTPUT_PATH  = "output.npy";
+
+struct callback_data {
+    std::vector<uint8_t> data;
+    std::vector<int64_t> shape;
+    std::size_t          n_bytes;
+    ggml_type            type;
+};
+
+callback_data CBDATA;
+
+static std::string ggml_type_to_numpy_descr(ggml_type type) {
+    switch (type) {
+        case GGML_TYPE_F32:
+            return "<f4";
+        case GGML_TYPE_F16:
+            return "<f2";
+        case GGML_TYPE_Q4_0:
+            return "<i1";
+        case GGML_TYPE_Q4_1:
+            return "<i1";
+        case GGML_TYPE_Q5_0:
+            return "<i1";
+        case GGML_TYPE_Q5_1:
+            return "<i1";
+        case GGML_TYPE_Q8_0:
+            return "<i1";
+        case GGML_TYPE_I8:
+            return "<i1";
+        case GGML_TYPE_I16:
+            return "<i2";
+        case GGML_TYPE_I32:
+            return "<i4";
+        case GGML_TYPE_I64:
+            return "<i8";
+        default:
+            throw std::runtime_error("Unsupported ggml type");
+    }
+}
+
+static void save_data_npy(const void *                 data,
+                          size_t                       n_bytes,
+                          const std::vector<int64_t> & shape,
+                          ggml_type                    type,
+                          const char *                 path) {
+    std::ostringstream hdr;
+    hdr << "{";
+    hdr << "\"descr\": \"" << ggml_type_to_numpy_descr(type) << "\", ";
+    hdr << "\"fortran_order\": False, ";
+    hdr << "\"shape\": (";
+
+    for (size_t i = 0; i < shape.size(); ++i) {
+        if (i) {
+            hdr << ", ";
+        }
+        hdr << shape[i];
+    }
+    if (shape.size() == 1) {
+        hdr << ",";
+    }
+    hdr << ")}";
+
+    std::string header = hdr.str();
+
+    const size_t magic_len        = 6;  // "\x93NUMPY"
+    const size_t version_len      = 2;  // major, minor
+    const size_t header_len_field = 2;  // uint16 little‑endian
+
+    size_t total_len = magic_len + version_len + header_len_field + header.size();
+    size_t pad       = (64 - (total_len % 64)) % 64;
+    header.append(pad, ' ');  // official padding character
+
+    std::ofstream out(path, std::ios::binary);
+    if (!out) {
+        throw std::runtime_error(std::string("Cannot open file: ") + path);
+    }
+
+    // Magic + version 1.0
+    out.write("\x93NUMPY", 6);
+    out.put(1);  // major
+    out.put(0);  // minor
+
+    // Header length (little‑endian uint16)
+    uint16_t hdr_len = static_cast<uint16_t>(header.size());
+    out.put(static_cast<char>(hdr_len & 0xFF));
+    out.put(static_cast<char>((hdr_len >> 8) & 0xFF));
+
+    // Header bytes
+    out.write(header.c_str(), header.size());
+
+    // Raw data payload
+    out.write(reinterpret_cast<const char *>(data), n_bytes);
+    out.close();
+}
+
+static bool save_tensor(struct ggml_tensor * t, bool ask, void * user_data) {
+    if (ask) {
+        return true;
+    }
+
+    auto * cb_data = static_cast<callback_data *>(user_data);
+
+    if (std::string(t->name) == TARGET_LAYER) {
+        const size_t n_bytes = ggml_nbytes(t);
+        cb_data->data.resize(n_bytes);
+        ggml_backend_tensor_get(t, cb_data->data.data(), 0, n_bytes);
+
+        std::vector<int64_t> shape;
+        for (int i = 0; i < GGML_MAX_DIMS; ++i) {
+            if (t->ne[i] != 0) {
+                shape.push_back(t->ne[i]);
+            }
+        }
+        if (shape.empty()) {
+            shape.push_back(1);
+        }
+        cb_data->shape   = shape;
+        cb_data->n_bytes = n_bytes;
+        cb_data->type    = t->type;
+    }
+    return true;
+}
+
+
 struct server_context {
     common_params params_base;
 
@@ -2383,6 +2509,8 @@ struct server_context {
         SRV_INF("loading model '%s'\n", params.model.path.c_str());
 
         params_base = params;
+        params_base.cb_eval = save_tensor;
+        params_base.cb_eval_user_data = &CBDATA;
 
         llama_init = common_init_from_params(params_base);
 
@@ -2930,6 +3058,7 @@ struct server_context {
             slot.has_next_token = false;
 
             SLT_DBG(slot, "%s", "stopped by EOS\n");
+            save_data_npy(CBDATA.data.data(), CBDATA.n_bytes, CBDATA.shape, CBDATA.type, OUTPUT_PATH);
         }
 
         SLT_DBG(slot, "n_decoded = %d, n_remaining = %d, next token: %5d '%s'\n", slot.n_decoded, slot.n_remaining, result.tok, token_str.c_str());
