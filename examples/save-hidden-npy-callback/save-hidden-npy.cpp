@@ -23,7 +23,7 @@ struct json_entry {
     std::string question_text;
     std::string answer_text;
     std::string model_answer;
-    int target;
+    int         target;
 };
 
 /**
@@ -32,6 +32,7 @@ struct json_entry {
  */
 struct callback_data {
     std::vector<uint8_t> data;
+    uint32_t uid;
 };
 
 static std::string ggml_type_to_numpy_descr(ggml_type type) {
@@ -115,6 +116,7 @@ static void save_data_npy(const void *                 data,
 
     // Raw data payload
     out.write(reinterpret_cast<const char *>(data), n_bytes);
+    out.close();
 }
 
 static bool ggml_debug(struct ggml_tensor * t, bool ask, void * user_data) {
@@ -124,9 +126,8 @@ static bool ggml_debug(struct ggml_tensor * t, bool ask, void * user_data) {
 
     auto * cb_data = static_cast<callback_data *>(user_data);
 
-    // Store only the tensor whose name matches the target layer
     if (std::string(t->name) == TARGET_LAYER) {
-        const size_t n_bytes = ggml_nbytes(t);
+        const size_t         n_bytes = ggml_nbytes(t);
         std::vector<uint8_t> local_buf(n_bytes);
 
         ggml_backend_tensor_get(t, local_buf.data(), 0, n_bytes);
@@ -134,11 +135,15 @@ static bool ggml_debug(struct ggml_tensor * t, bool ask, void * user_data) {
 
         std::vector<int64_t> shape;
         for (int i = 0; i < GGML_MAX_DIMS; ++i) {
-            if (t->ne[i] != 0) shape.push_back(t->ne[i]);
+            if (t->ne[i] != 0) {
+                shape.push_back(t->ne[i]);
+            }
         }
-        if (shape.empty()) shape.push_back(1);
+        if (shape.empty()) {
+            shape.push_back(1);
+        }
 
-        std::filesystem::path outp = std::filesystem::path(OUTPUT_DIR) / "output.npy";
+        std::filesystem::path outp = std::filesystem::path(OUTPUT_DIR) / (std::to_string(cb_data->uid) + "output.npy");
 
         save_data_npy(data_ptr, n_bytes, shape, t->type, outp.string().c_str());
     }
@@ -184,8 +189,7 @@ static std::vector<json_entry> load_input_json(const std::string & path) {
     return entries;
 }
 
-
-int main(int argc, char ** argv) {    
+int main(int argc, char ** argv) {
     if (!std::filesystem::exists(OUTPUT_DIR)) {
         std::filesystem::create_directories(OUTPUT_DIR);
     } else {
@@ -216,6 +220,7 @@ int main(int argc, char ** argv) {
 
     std::vector<json_entry> entries = load_input_json(INPUT_JSON);
     for (const auto & e : entries) {
+        cb_data.uid = e.uid;
         // run inference on the question text
         if (!run_one(ctx, params, e.question_text)) {
             LOG_ERR("Inference failed for uid %u\n", e.uid);
