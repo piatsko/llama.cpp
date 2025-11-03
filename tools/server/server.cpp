@@ -2315,8 +2315,9 @@ struct server_response {
     }
 };
 
-const char* TARGET_LAYER = "l_out-15";
-const char* OUTPUT_PATH  = "outputs/output.npy";
+static constexpr int NUM_LAYERS = 3;
+const std::string TARGET_LAYERS[NUM_LAYERS] = {"l_out-12", "l_out-15", "l_out-20"};
+const char* OUTPUT_DIR  = "outputs/";
 
 struct callback_data {
     std::vector<uint8_t> data;
@@ -2325,7 +2326,7 @@ struct callback_data {
     ggml_type            type;
 };
 
-callback_data CBDATA;
+static callback_data CBDATA[NUM_LAYERS];
 
 static std::string ggml_type_to_numpy_descr(ggml_type type) {
     switch (type) {
@@ -2416,25 +2417,28 @@ static bool save_tensor(struct ggml_tensor * t, bool ask, void * user_data) {
         return true;
     }
 
-    auto * cb_data = static_cast<callback_data *>(user_data);
+    auto * cb_data_arr = static_cast<callback_data *>(user_data);
 
-    if (std::string(t->name) == TARGET_LAYER) {
-        const size_t n_bytes = ggml_nbytes(t);
-        cb_data->data.resize(n_bytes);
-        ggml_backend_tensor_get(t, cb_data->data.data(), 0, n_bytes);
+    for (int i = 0; i < NUM_LAYERS; ++i) {
+        if (std::string(t->name) == TARGET_LAYERS[i]) {
+            auto* cb_data = &cb_data_arr[i];
+            const size_t n_bytes = ggml_nbytes(t);
+            cb_data->data.resize(n_bytes);
+            ggml_backend_tensor_get(t, cb_data->data.data(), 0, n_bytes);
 
-        std::vector<int64_t> shape;
-        for (int i = 0; i < GGML_MAX_DIMS; ++i) {
-            if (t->ne[i] != 0) {
-                shape.push_back(t->ne[i]);
+            std::vector<int64_t> shape;
+            for (int i = 0; i < GGML_MAX_DIMS; ++i) {
+                if (t->ne[i] != 0) {
+                    shape.push_back(t->ne[i]);
+                }
             }
+            if (shape.empty()) {
+                shape.push_back(1);
+            }
+            cb_data->shape   = shape;
+            cb_data->n_bytes = n_bytes;
+            cb_data->type    = t->type;
         }
-        if (shape.empty()) {
-            shape.push_back(1);
-        }
-        cb_data->shape   = shape;
-        cb_data->n_bytes = n_bytes;
-        cb_data->type    = t->type;
     }
     return true;
 }
@@ -2510,7 +2514,7 @@ struct server_context {
 
         params_base = params;
         params_base.cb_eval = save_tensor;
-        params_base.cb_eval_user_data = &CBDATA;
+        params_base.cb_eval_user_data = CBDATA;
 
         llama_init = common_init_from_params(params_base);
 
@@ -3058,7 +3062,11 @@ struct server_context {
             slot.has_next_token = false;
 
             SLT_DBG(slot, "%s", "stopped by EOS\n");
-            save_data_npy(CBDATA.data.data(), CBDATA.n_bytes, CBDATA.shape, CBDATA.type, OUTPUT_PATH);
+            for (int i = 0; i < NUM_LAYERS; ++i) {
+                auto& cb_data = CBDATA[i];
+                std::string filename = std::string(OUTPUT_DIR) + TARGET_LAYERS[i] + ".npy";
+                save_data_npy(cb_data.data.data(), cb_data.n_bytes, cb_data.shape, cb_data.type, filename.c_str());
+            }
         }
 
         SLT_DBG(slot, "n_decoded = %d, n_remaining = %d, next token: %5d '%s'\n", slot.n_decoded, slot.n_remaining, result.tok, token_str.c_str());
