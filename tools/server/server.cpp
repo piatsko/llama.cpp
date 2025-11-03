@@ -2316,7 +2316,7 @@ struct server_response {
 };
 
 const char* TARGET_LAYER = "l_out-15";
-const char* OUTPUT_PATH  = "output.npy";
+const char* OUTPUT_PATH  = "outputs/output.npy";
 
 struct callback_data {
     std::vector<uint8_t> data;
